@@ -11,6 +11,11 @@
 #include <solenoid_control.h>
 #include <fingerprint_manager.h>
 
+#include <ESP8266HTTPClient.h>
+#include <WiFiClientSecureBearSSL.h>
+
+BearSSL::WiFiClientSecure wifiClient;
+
 // Change these constants as needed
 const char *supabaseUrl = "https://nlljvmwgxlnhdinvkofd.supabase.co/rest/v1/TBL_URL?id=eq.1";
 const char *supabaseKeyy = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5sbGp2bXdneGxuaGRpbnZrb2ZkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3MzkzODE4NzUsImV4cCI6MjA1NDk1Nzg3NX0.O30PoY_iunkPTTWVltheYHfaKBoOxL3iAN3Ktw1lwsk";
@@ -139,6 +144,9 @@ public:
     if (httpResponseCode > 0)
     {
       String response = http.getString();
+      http.end();
+      client.stop(); // Explicitly close the WiFiClient
+
       Serial.print("[STATE POLL] HTTP ");
       Serial.println(httpResponseCode);
       Serial.print("[STATE POLL] Response: ");
@@ -229,12 +237,17 @@ public:
     if (httpResponseCode > 0)
     {
       String response = http.getString();
+      http.end();
+      client.stop();
+
       Serial.print("[POLL] HTTP Code: ");
       Serial.println(httpResponseCode);
       Serial.print("[POLL] Response: ");
       // ✅ Parse JSON Response
       StaticJsonDocument<1024> doc;
       DeserializationError err = deserializeJson(doc, response);
+
+
       if (!err && doc.is<JsonArray>()) {
           JsonArray arr = doc.as<JsonArray>();
 
@@ -250,16 +263,20 @@ public:
 
               if (isOpen) {
                   Serial.printf("[POLL] Locker %d is open, activating solenoid...\n", lockerNumber);
-                  // openLocker(lockerNumber);
+                  openLocker(lockerNumber);
+                  delay(2000);
+                  setLockerClosed(lockerNumber);
               }
           }
       } 
       else {
           Serial.println("[POLL] JSON parse error!");
+          http.end();
       }
     } 
     else {
         Serial.printf("[POLL] GET request failed, code: %d\n", httpResponseCode);
+        http.end();
     }
 
     http.end();
@@ -273,63 +290,119 @@ public:
     case 1:
       Serial.println("Opening Small Locker...");
       SolenoidControl::activate(2);
-      delay(2000);
-      setLockerClosed(lockerNumber);
       break;
     case 2:
       Serial.println("Opening Medium Locker...");
       SolenoidControl::activate(13);
-      delay(2000);
-      setLockerClosed(lockerNumber);
       break;
     case 3:
       Serial.println("Opening Large Locker...");
       SolenoidControl::activate(15);
-      delay(2000);
-      setLockerClosed(lockerNumber);
       break;
     default:
       Serial.println("Unknown locker number.");
       break;
     }
   }
-
+  
   // Sends an update to Supabase to mark a locker as closed.
   void setLockerClosed(int lockerId)
   {
-    if (WiFi.status() != WL_CONNECTED)
-    {
-      Serial.println("[POLL] WiFi not connected, skipping poll.");
-      return;
+    BearSSL::WiFiClientSecure client;
+    client.setInsecure();  // Set to true for testing purposes; use false for production
+    HTTPClient https;
+    
+    String requestUrl = "https://nlljvmwgxlnhdinvkofd.supabase.co/functions/v1/update_locker_availablitiy";
+    String apiUrl = serverUrl + "/Locker/UpdateLockerStatus/" + String(lockerId);
+    
+    String jsonBody = "{\"api_url\": \"" + apiUrl + "\"}";
+
+    https.begin(client, requestUrl);
+
+    https.addHeader("apikey", String(supabaseKeyy));
+    https.addHeader("Authorization", "Bearer " + String(supabaseKeyy));
+    https.addHeader("Content-Type", "application/json");
+    https.addHeader("Accept", "*/*");
+
+    int httpsResponseCode = https.POST(jsonBody);
+
+    if (httpsResponseCode > 0) {
+        Serial.printf("[SUCCESS] Response Code: %d\n", httpsResponseCode);
+        String response = https.getString();
+        Serial.println("[RESPONSE] " + response);
+
+        // ✅ Handle plain "true" or "false" responses
+        response.trim();
+        if (response == "true") {
+            Serial.println("[INFO] API Response: Success ✅");
+        } else if (response == "false") {
+            Serial.println("[INFO] API Response: Failure ❌");
+        } else {
+            Serial.println("[WARNING] Unexpected response format!");
+        }
+    } else {
+        Serial.printf("[ERROR] POST failed: %d - %s\n", httpsResponseCode, https.errorToString(httpsResponseCode).c_str());
     }
 
-    WiFiClientSecure client;
-    client.setInsecure();
+    https.end();
+    client.stop();
 
-    HTTPClient http;
-    String requestUrl = "http://localhost:5192/Locker/UpdateLockerStatus/" + String(lockerId);
 
-     // Set headers
-     http.addHeader("Content-Type", "application/json");
-     http.addHeader("Prefer", "return=representation");
-     http.addHeader("Accept", "*/*");
+    // if (WiFi.status() != WL_CONNECTED)
+    // {
+    //     Serial.println("[POLL] WiFi not connected, skipping poll.");
+    //     return;
+    // }
 
-     String jsonBody = "{}"; // Use `{}` if your API needs an empty JSON object
- 
-     // Send HTTP POST request
-     int httpResponseCode = http.PUT(jsonBody);
- 
-     // Handle response
-     if (httpResponseCode > 0)
-     {
-         Serial.printf("[CLOSE] POST response: %s\n", http.getString().c_str());
-     }
-     else
-     {
-         Serial.printf("[CLOSE] POST failed: %d - %s\n", httpResponseCode, http.errorToString(httpResponseCode).c_str());
-     }
- 
-     http.end(); // Close connection
+    // Serial.println("[DEBUG] WiFi is connected!");
+
+    // WiFiClientSecure client;
+    // client.setInsecure();      // Disable SSL verification (for testing)
+
+    // HTTPClient http;
+    // String requestUrl = "https://nlljvmwgxlnhdinvkofd.supabase.co/functions/v1/update_locker_availablitiy";
+    // String apiUrl = serverUrl + "/Locker/UpdateLockerStatus/" + String(lockerId);
+
+    // Serial.println("[DEBUG] Request URL: " + requestUrl);
+    // Serial.println("[DEBUG] API URL to send: " + apiUrl);
+
+    // http.begin(client, requestUrl);
+    
+    // // ✅ Add all necessary headers
+    // http.addHeader("apikey", String(supabaseKeyy));
+    // http.addHeader("Authorization", "Bearer " + String(supabaseKeyy));
+    // http.addHeader("Content-Type", "application/json");
+    // http.addHeader("Accept", "*/*");
+
+    // // ✅ Proper JSON formatting
+    // // String jsonBody = "{\"api_url\": \"" + apiUrl "\"}";
+    // String jsonBody = "{\"api_url\":  " + apiUrl + "}";
+    // // String jsonBody = "{\"api_url\": \"" + matchFingerprintUrl + "\", \"IDS\": " + idsString + "}";
+    
+    // Serial.println("[DEBUG] JSON Payload: " + jsonBody);
+
+    // // Send POST request
+    // int httpResponseCode = http.sendRequest("POST", jsonBody);
+
+    // if (httpResponseCode > 0) {
+    //     Serial.printf("[SUCCESS] Response Code: %d\n", httpResponseCode);
+    //     String response = http.getString();
+    //     Serial.println("[RESPONSE] " + response);
+
+    //     // ✅ Handle plain "true" or "false" responses
+    //     response.trim();
+    //     if (response == "true") {
+    //         Serial.println("[INFO] API Response: Success ✅");
+    //     } else if (response == "false") {
+    //         Serial.println("[INFO] API Response: Failure ❌");
+    //     } else {
+    //         Serial.println("[WARNING] Unexpected response format!");
+    //     }
+    // } else {
+    //     Serial.printf("[ERROR] POST failed: %d - %s\n", httpResponseCode, http.errorToString(httpResponseCode).c_str());
+    // }
+
+    // http.end();
   }
 
   // Verifies a user based on a given BioID by sending fingerprint data.

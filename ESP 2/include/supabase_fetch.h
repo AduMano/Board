@@ -318,6 +318,7 @@ public:
     http.addHeader("Accept", "*/*");
 
     String jsonBody = "{\"api_url\": \"" + matchFingerprintUrl + "/" + lockerId + "\"}";
+    Serial.println(jsonBody);
 
     int httpResponseCode = http.POST(jsonBody);
 
